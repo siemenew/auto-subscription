@@ -239,23 +239,23 @@ def main():
                     singbox_outbounds.append({"type": "vmess", "server": node["address"], "port": node["port"], "uuid": node["id"]})
 
             elif uri.startswith("vless://"):
-    node = parse_vless_uri(uri)
-    if node:
-        vnext_list.append({
-            "address": node["address"],
-            "port": node["port"],
-            "users": [{"id": node["id"], "security": node["security"]}]
-        })
-        clash_proxies.append({
-            "name": "vless-node",
-            "type": "vless",
-            "server": node["address"],
-            "port": node["port"],
-            "uuid": node["id"]
-        })
-        singbox_outbounds.append({
-            "type": "vless",
-            "server": node["address"],
-            "port": node["port"],
-            "uuid": node["id"]
-        })
+                node = parse_vless_uri(uri)
+                if node:
+                    vnext_list.append({
+                        "address": node["address"],
+                        "port": node["port"],
+                        "users": [{"id": node["id"], "security": node["security"]}]
+                    })
+                    clash_proxies.append({
+                        "name": "vless-node",
+                        "type": "vless",
+                        "server": node["address"],
+                        "port": node["port"],
+                        "uuid": node["id"]
+                    })
+                    singbox_outbounds.append({
+                        "type": "vless",
+                        "server": node["address"],
+                        "port": node["port"],
+                        "uuid": node["id"]
+                    })
