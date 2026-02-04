@@ -24,10 +24,10 @@ jobs:
       - name: Run update script
         run: python update_v2ray.py
 
-      - name: Commit and push
+           - name: Commit and push
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-          git add v2ray.json
-          git commit -m "Auto update v2ray" || echo "No changes"
+          git add v2ray.json clash.yaml singbox.json
+          git commit -m "Auto update configs" || echo "No changes"
           git push
