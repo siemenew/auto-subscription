@@ -1,0 +1,8 @@
+proxies: []
+proxy-groups:
+- name: Auto
+  proxies:
+  - DIRECT
+  type: select
+rules:
+- MATCH,Auto
