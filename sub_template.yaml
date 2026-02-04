@@ -1,0 +1,13 @@
+# 这是一个空的 Clash 订阅模板
+# 你可以在 actions 中自动填充 proxies 字段
+
+proxies: []
+
+proxy-groups:
+  - name: "Auto"
+    type: select
+    proxies:
+      - DIRECT
+
+rules:
+  - MATCH,Auto
