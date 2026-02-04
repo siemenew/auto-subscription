@@ -1,14 +1,11 @@
 import base64
+import json
 import requests
-import yaml
 from urllib.parse import urlparse
 
-# 在这里填入你自己的公开订阅链接（不含任何节点示例）
-SOURCE_URLS = [
-    # "https://example.com/clash.yaml",
-    # "https://example.com/base64-sub",
-]
-
+SOURCES_FILE = "sources.txt"
+V2RAY_TEMPLATE = "v2ray_template.json"
+OUTPUT_FILE = "v2ray.json"
 TIMEOUT = 10
 
 
@@ -16,135 +13,137 @@ def fetch_text(url: str) -> str:
     try:
         resp = requests.get(url, timeout=TIMEOUT)
         resp.raise_for_status()
+        print(f"[INFO] 拉取成功: {url} ({len(resp.text)} 字符)")
         return resp.text.strip()
     except Exception as e:
         print(f"[WARN] 拉取失败: {url} -> {e}")
         return ""
 
 
-def is_yaml(text: str) -> bool:
-    try:
-        data = yaml.safe_load(text)
-        return isinstance(data, dict)
-    except Exception:
-        return False
-
-
 def try_b64_decode(text: str) -> str:
-    # 处理常见的 base64 订阅（带换行、缺 padding）
-    raw = text.strip()
-    raw = raw.replace("\n", "")
-    # 补齐 padding
+    raw = text.strip().replace("\n", "")
     padding = 4 - (len(raw) % 4)
     if padding and padding < 4:
         raw += "=" * padding
     try:
         return base64.b64decode(raw).decode("utf-8", errors="ignore")
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] Base64 解码失败: {e}")
         return ""
 
 
-def parse_clash_yaml(text: str) -> list:
-    """
-    解析 Clash YAML，提取 proxies 数组
-    """
+def load_sources():
+    urls_or_uris = []
     try:
-        data = yaml.safe_load(text)
-        proxies = data.get("proxies", [])
-        if isinstance(proxies, list):
-            return proxies
-    except Exception as e:
-        print(f"[WARN] 解析 Clash YAML 失败: {e}")
-    return []
+        with open(SOURCES_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                urls_or_uris.append(line)
+    except FileNotFoundError:
+        print(f"[WARN] 未找到 {SOURCES_FILE}，将不处理任何源")
+    return urls_or_uris
 
 
-def parse_uri_lines(text: str) -> list:
-    """
-    解析通用订阅（vmess://, ss://, trojan:// 等）
-    这里只做“原样收集”，不做协议级解析，
-    后续可以接 Clash 转换器处理。
-    """
+def is_url(s: str) -> bool:
+    p = urlparse(s)
+    return p.scheme in ("http", "https")
+
+
+def parse_uri_lines(text: str):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    uris = []
-    for line in lines:
-        if "://" in line:
-            uris.append(line)
-    return uris
+    return [l for l in lines if "://" in l]
 
 
-def normalize_proxy_for_dedup(proxy) -> str:
+def parse_vmess_uri(uri: str) -> dict:
     """
-    用于去重的 key，尽量不暴露细节：
-    - 优先用 name
-    - 其次用 server + port
+    这里只给出结构示例，你自己实现解析逻辑。
+    返回 V2Ray vnext 所需字段：
+      address, port, id, alterId, security 等
     """
-    if isinstance(proxy, dict):
-        name = proxy.get("name")
-        server = proxy.get("server")
-        port = proxy.get("port")
-        if name:
-            return f"name:{name}"
-        if server and port:
-            return f"{server}:{port}"
-    return str(proxy)
+    # TODO: 这里写你自己的 vmess:// 解析逻辑
+    return {
+        "address": "example.com",
+        "port": 443,
+        "id": "00000000-0000-0000-0000-000000000000",
+        "alterId": 0,
+        "security": "auto"
+    }
+
+
+def build_vnext_from_uris(uris):
+    vnext_list = []
+    for uri in uris:
+        if uri.startswith("vmess://"):
+            node = parse_vmess_uri(uri)
+            vnext_list.append({
+                "address": node["address"],
+                "port": node["port"],
+                "users": [
+                    {
+                        "id": node["id"],
+                        "alterId": node["alterId"],
+                        "security": node["security"]
+                    }
+                ]
+            })
+        else:
+            # 其他协议（vless/trojan等）你可以后续扩展
+            print(f"[INFO] 暂不处理协议: {uri[:20]}...")
+    return vnext_list
 
 
 def main():
-    all_clash_proxies = []
-    all_uri_lines = []
+    all_uris = []
 
-    for url in SOURCE_URLS:
-        print(f"[INFO] 拉取订阅: {url}")
-        text = fetch_text(url)
-        if not text:
-            continue
+    entries = load_sources()
+    print(f"[INFO] 从 {SOURCES_FILE} 读取到 {len(entries)} 条入口")
 
-        # 1. 先尝试当作 Clash YAML
-        if is_yaml(text):
-            print(f"[INFO] 识别为 Clash YAML: {url}")
-            proxies = parse_clash_yaml(text)
-            all_clash_proxies.extend(proxies)
-            continue
+    for item in entries:
+        if is_url(item):
+            text = fetch_text(item)
+            if not text:
+                continue
 
-        # 2. 尝试当作 base64 订阅
-        decoded = try_b64_decode(text)
-        if decoded:
-            print(f"[INFO] 识别为 Base64 订阅: {url}")
-            uris = parse_uri_lines(decoded)
-            all_uri_lines.extend(uris)
-            continue
+            # 尝试 Base64 订阅
+            decoded = try_b64_decode(text)
+            if decoded:
+                uris = parse_uri_lines(decoded)
+                print(f"[INFO] 从 Base64 订阅解析出 {len(uris)} 条 URI")
+                all_uris.extend(uris)
+            else:
+                # 直接按文本 URI 列表处理
+                uris = parse_uri_lines(text)
+                print(f"[INFO] 从文本订阅解析出 {len(uris)} 条 URI")
+                all_uris.extend(uris)
+        else:
+            # 本地直接写的 vmess:// / vless:// 等
+            all_uris.append(item)
 
-        # 3. 直接按文本行解析 URI
-        print(f"[INFO] 识别为纯文本 URI 列表: {url}")
-        uris = parse_uri_lines(text)
-        all_uri_lines.extend(uris)
+    # 去重
+    all_uris = list(dict.fromkeys(all_uris))
+    print(f"[INFO] URI 总数（去重后）: {len(all_uris)}")
 
-    # 去重 Clash proxies
-    dedup_map = {}
-    for p in all_clash_proxies:
-        key = normalize_proxy_for_dedup(p)
-        dedup_map[key] = p
-    clash_proxies_deduped = list(dedup_map.values())
+    # 构建 vnext
+    vnext_list = build_vnext_from_uris(all_uris)
+    print(f"[INFO] vnext 节点数: {len(vnext_list)}")
 
-    print(f"[INFO] Clash proxies 数量: 原始={len(all_clash_proxies)}, 去重后={len(clash_proxies_deduped)}")
-    print(f"[INFO] URI 节点行数（未转换）: {len(all_uri_lines)}")
+    # 读取模板并填充
+    with open(V2RAY_TEMPLATE, "r", encoding="utf-8") as f:
+        tpl = json.load(f)
 
-    # 读取模板
-    with open("sub_template.yaml", "r", encoding="utf-8") as f:
-        tpl = yaml.safe_load(f)
+    if not tpl.get("outbounds"):
+        print("[ERROR] 模板中缺少 outbounds 字段")
+        return
 
-    # 写入 Clash proxies
-    tpl["proxies"] = clash_proxies_deduped
+    # 这里只处理第一个 outbound，协议 vmess
+    tpl["outbounds"][0]["settings"]["vnext"] = vnext_list
 
-    # 你也可以把 all_uri_lines 写入一个单独文件，供其他工具转换
-    with open("raw_uris.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(all_uri_lines))
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(tpl, f, indent=2, ensure_ascii=False)
 
-    # 输出最终 Clash 订阅
-    with open("sub.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(tpl, f, allow_unicode=True)
-
-    print("[INFO] 已生成 sub.yaml 与 raw_uris.txt")
+    print(f"[INFO] 已生成 {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
