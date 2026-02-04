@@ -1,6 +1,7 @@
 import base64
 import json
 import requests
+import yaml
 from urllib.parse import urlparse
 
 SOURCES_FILE = "sources.txt"
@@ -27,8 +28,7 @@ def try_b64_decode(text: str) -> str:
         raw += "=" * padding
     try:
         return base64.b64decode(raw).decode("utf-8", errors="ignore")
-    except Exception as e:
-        print(f"[WARN] Base64 解码失败: {e}")
+    except Exception:
         return ""
 
 
@@ -42,7 +42,7 @@ def load_sources():
                     continue
                 urls_or_uris.append(line)
     except FileNotFoundError:
-        print(f"[WARN] 未找到 {SOURCES_FILE}，将不处理任何源")
+        print(f"[WARN] 未找到 {SOURCES_FILE}")
     return urls_or_uris
 
 
@@ -56,13 +56,39 @@ def parse_uri_lines(text: str):
     return [l for l in lines if "://" in l]
 
 
+def parse_clash_yaml(text: str) -> list:
+    """
+    解析 Clash YAML，提取 vmess 节点并转换成 V2Ray vnext 格式
+    """
+    try:
+        data = yaml.safe_load(text)
+        proxies = data.get("proxies", [])
+        vnext_list = []
+        for p in proxies:
+            if p.get("type") == "vmess":
+                vnext_list.append({
+                    "address": p.get("server", "example.com"),
+                    "port": p.get("port", 443),
+                    "users": [
+                        {
+                            "id": p.get("uuid", "00000000-0000-0000-0000-000000000000"),
+                            "alterId": p.get("alterId", 0),
+                            "security": p.get("cipher", "auto")
+                        }
+                    ]
+                })
+        return vnext_list
+    except Exception as e:
+        print(f"[WARN] Clash YAML 解析失败: {e}")
+        return []
+
+
 def parse_vmess_uri(uri: str) -> dict:
     """
-    这里只给出结构示例，你自己实现解析逻辑。
-    返回 V2Ray vnext 所需字段：
-      address, port, id, alterId, security 等
+    解析 vmess://xxx
+    返回 V2Ray vnext 所需字段
     """
-    # TODO: 这里写你自己的 vmess:// 解析逻辑
+    # TODO: 这里你可以实现完整的 vmess:// Base64 解码逻辑
     return {
         "address": "example.com",
         "port": 443,
@@ -89,13 +115,12 @@ def build_vnext_from_uris(uris):
                 ]
             })
         else:
-            # 其他协议（vless/trojan等）你可以后续扩展
             print(f"[INFO] 暂不处理协议: {uri[:20]}...")
     return vnext_list
 
 
 def main():
-    all_uris = []
+    all_vnext = []
 
     entries = load_sources()
     print(f"[INFO] 从 {SOURCES_FILE} 读取到 {len(entries)} 条入口")
@@ -106,39 +131,56 @@ def main():
             if not text:
                 continue
 
-            # 尝试 Base64 订阅
+            # 先尝试 YAML
+            if "proxies:" in text:
+                vnext_list = parse_clash_yaml(text)
+                all_vnext.extend(vnext_list)
+                continue
+
+            # 尝试 Base64
             decoded = try_b64_decode(text)
             if decoded:
                 uris = parse_uri_lines(decoded)
-                print(f"[INFO] 从 Base64 订阅解析出 {len(uris)} 条 URI")
-                all_uris.extend(uris)
-            else:
-                # 直接按文本 URI 列表处理
-                uris = parse_uri_lines(text)
-                print(f"[INFO] 从文本订阅解析出 {len(uris)} 条 URI")
-                all_uris.extend(uris)
+                vnext_list = build_vnext_from_uris(uris)
+                all_vnext.extend(vnext_list)
+                continue
+
+            # 直接按文本 URI
+            uris = parse_uri_lines(text)
+            vnext_list = build_vnext_from_uris(uris)
+            all_vnext.extend(vnext_list)
         else:
-            # 本地直接写的 vmess:// / vless:// 等
-            all_uris.append(item)
+            # 本地直接写的 URI
+            if item.startswith("vmess://"):
+                node = parse_vmess_uri(item)
+                all_vnext.append({
+                    "address": node["address"],
+                    "port": node["port"],
+                    "users": [
+                        {
+                            "id": node["id"],
+                            "alterId": node["alterId"],
+                            "security": node["security"]
+                        }
+                    ]
+                })
 
     # 去重
-    all_uris = list(dict.fromkeys(all_uris))
-    print(f"[INFO] URI 总数（去重后）: {len(all_uris)}")
+    seen = set()
+    deduped = []
+    for v in all_vnext:
+        key = f"{v['address']}:{v['port']}"
+        if key not in seen:
+            seen.add(key)
+            deduped.append(v)
 
-    # 构建 vnext
-    vnext_list = build_vnext_from_uris(all_uris)
-    print(f"[INFO] vnext 节点数: {len(vnext_list)}")
+    print(f"[INFO] vnext 节点数: {len(deduped)}")
 
     # 读取模板并填充
     with open(V2RAY_TEMPLATE, "r", encoding="utf-8") as f:
         tpl = json.load(f)
 
-    if not tpl.get("outbounds"):
-        print("[ERROR] 模板中缺少 outbounds 字段")
-        return
-
-    # 这里只处理第一个 outbound，协议 vmess
-    tpl["outbounds"][0]["settings"]["vnext"] = vnext_list
+    tpl["outbounds"][0]["settings"]["vnext"] = deduped
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(tpl, f, indent=2, ensure_ascii=False)
