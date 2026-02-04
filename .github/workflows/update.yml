@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests pyyaml
 
       - name: Run update script
         run: python update_v2ray.py
